@@ -1,3 +1,6 @@
+# Pinned dependencies for local reproducibility.
+# On Google Colab, only 'simpy' needs explicit installation;
+# numpy, pandas, matplotlib, and seaborn ship pre-compiled.
 simpy==4.1.1
 numpy==1.26.4
 pandas==2.2.1
