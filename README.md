@@ -21,8 +21,6 @@ We simulate two distinct architectural patterns under stress conditions (500 TPS
 2.  **TO-BE (Cell-Based/Event-Driven):** A system sharded into 10 independent `Cells`, using `Kafka` for asynchronous ingestion. Validates **Little's Law** ($L = \lambda W$) applied to throughput.
 
 ## 📂 Repository Structure
-## 📁 Repository Structure
-
 ```text
 mit507-yape-architecture-sim/
 ├── src/
