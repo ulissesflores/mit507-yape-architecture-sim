@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ulissesflores/mit507-yape-architecture-sim/blob/main/notebooks/simulation_analysis.ipynb)
 
-> **State-of-the-Art architectural validation for high-frequency FinTech systems.**
+> **Architectural validation for high-frequency FinTech systems.**
 
 ## 📋 Overview
 
