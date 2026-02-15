@@ -15,6 +15,42 @@ Developed by **Carlos Ulisses Flores** for the MIT-507 (Digital Organization) co
 
 ## 🧪 The Experiment
 
+This repository simulates two architectural regimes under identical traffic:
+a single **monolith** with a shared connection pool, and a **cell-based**
+architecture in which shards are independently processed by per-cell workers.
+
+### ACK variability model (cell-based)
+
+In the cell-based regime, the client-observable latency is the **ingress ACK**
+(i.e., acknowledgement after asynchronous handoff). In production systems this ACK
+is rarely deterministic; it typically exhibits:
+
+- **micro-jitter** (network jitter, enqueue/dequeue variability, short CPU contention),
+- **load-coupled drift** (backpressure as queues grow), and
+- **rare tail spikes** (transient retries, GC pauses, kernel scheduling anomalies).
+
+To capture these effects without overfitting, the simulator uses an explicit and
+reproducible mixture model:
+
+\[
+	ext{ack}_{ms} = b \cdot \mathrm{LogNormal}(\mu=-	frac{1}{2}\sigma^2,\ \sigma)
++ \mathcal{N}(0,\ s)
++ q \cdot k
++ \mathbb{I}_{tail}\cdot \mathrm{LogNormal}(\mu_t,\ \sigma_t)
+\]
+
+Where:
+- \(b\) is `event_bus_ack_ms` (baseline ACK),
+- \(\sigma\) is `event_bus_ack_jitter_lognorm_sigma` (multiplicative jitter),
+- \(s\) is `event_bus_ack_additive_std_ms` (additive jitter),
+- \(q\) is the target cell backlog snapshot, with slope \(k\) = `event_bus_ack_backlog_scale_ms`,
+- \(\mathbb{I}_{tail}\sim\mathrm{Bernoulli}(p)\) with \(p\) = `event_bus_ack_tail_prob`,
+  and the spike parameters \((\mu_t,\sigma_t)\) are
+  (`event_bus_ack_tail_lognorm_mu`, `event_bus_ack_tail_lognorm_sigma`).
+
+All parameters are recorded in `experiment_provenance.json` when running the notebook.
+
+
 We simulate two distinct architectural patterns under stress conditions (500 TPS):
 
 1.  **AS-IS (Monolithic/Legacy):** A system with a shared `PostgreSQL` resource. Validates the "Hollow Core" problem where database locks cause cascading latency.

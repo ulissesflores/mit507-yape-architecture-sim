@@ -91,8 +91,36 @@ class ExperimentConfig:
     arrival_rate_stress : int
         Poisson arrival rate (transactions / second) under stress traffic.
     event_bus_ack_ms : float
-        Approximate ingress acknowledgement latency (ms) for the
-        asynchronous event-bus handoff in the cell-based architecture.
+        Baseline ingress acknowledgement latency (ms) for the asynchronous
+        event-bus handoff in the cell-based architecture.
+
+    event_bus_ack_jitter_lognorm_sigma : float
+        Multiplicative jitter on the ACK path, modeled as a log-normal
+        factor with mean 1.0. Set to 0.0 to disable.
+
+    event_bus_ack_additive_std_ms : float
+        Additive (zero-mean) Gaussian jitter (ms) on top of the
+        multiplicative term. Set to 0.0 to disable.
+
+    event_bus_ack_backlog_scale_ms : float
+        Linear sensitivity (ms per queued request) that increases the ACK
+        latency as the target cell backlog grows (proxying broker/backpressure
+        effects). Set to 0.0 to disable.
+
+    event_bus_ack_tail_prob : float
+        Probability of a rare tail event on the ACK path (0–1).
+
+    event_bus_ack_tail_lognorm_mu : float
+        Location (μ) of the log-normal tail spike (in log-ms). Interpreted as
+        the mean of the underlying normal distribution.
+
+    event_bus_ack_tail_lognorm_sigma : float
+        Scale (σ) of the log-normal tail spike (in log-ms). Must be > 0 when
+        ``event_bus_ack_tail_prob`` > 0.
+
+    event_bus_ack_floor_ms : float
+        Strictly positive lower bound applied to the sampled ACK latency to
+        prevent non-physical negative/zero values.
     num_cells : int
         Number of independent cell resources (shards) in the cell-based
         architecture.
@@ -137,8 +165,28 @@ class ExperimentConfig:
     arrival_rate_normal: int = 50
     arrival_rate_stress: int = 500
 
-    # --- Async path ---
+    # --- Async path (ACK latency model) ---
     event_bus_ack_ms: float = 2.0
+
+    # Optional jitter/tail model for the *user-visible* ACK in CELL_BASED mode.
+    # Defaults preserve the prior behavior (deterministic ACK = event_bus_ack_ms).
+    #
+    # The model is a lightweight mixture commonly used to approximate empirical
+    # latency distributions in production systems:
+    #   ack_ms = base * LogNormal(μ=-½σ², σ=event_bus_ack_jitter_lognorm_sigma)
+    #          + Normal(0, event_bus_ack_additive_std_ms)
+    #          + queue_size * event_bus_ack_backlog_scale_ms
+    #          + TailSpike   (with prob = event_bus_ack_tail_prob)
+    #
+    # Where TailSpike ~ LogNormal(μ=event_bus_ack_tail_lognorm_mu,
+    #                            σ=event_bus_ack_tail_lognorm_sigma).
+    event_bus_ack_jitter_lognorm_sigma: float = 0.0
+    event_bus_ack_additive_std_ms: float = 0.0
+    event_bus_ack_backlog_scale_ms: float = 0.0
+    event_bus_ack_tail_prob: float = 0.0
+    event_bus_ack_tail_lognorm_mu: float = 0.0
+    event_bus_ack_tail_lognorm_sigma: float = 0.0
+    event_bus_ack_floor_ms: float = 0.1
 
     # --- Resource sizing ---
     num_cells: int = 10
@@ -167,6 +215,21 @@ class ExperimentConfig:
                 f"Invalid traffic_type '{self.traffic_type}'. "
                 f"Expected one of {VALID_TRAFFIC_TYPES}."
             )
+        # --- ACK latency model invariants ---
+        if self.event_bus_ack_jitter_lognorm_sigma < 0:
+            raise ValueError("event_bus_ack_jitter_lognorm_sigma must be >= 0.")
+        if self.event_bus_ack_additive_std_ms < 0:
+            raise ValueError("event_bus_ack_additive_std_ms must be >= 0.")
+        if self.event_bus_ack_backlog_scale_ms < 0:
+            raise ValueError("event_bus_ack_backlog_scale_ms must be >= 0.")
+        if not (0.0 <= self.event_bus_ack_tail_prob <= 1.0):
+            raise ValueError("event_bus_ack_tail_prob must be within [0, 1].")
+        if self.event_bus_ack_tail_prob > 0 and self.event_bus_ack_tail_lognorm_sigma <= 0:
+            raise ValueError(
+                "event_bus_ack_tail_lognorm_sigma must be > 0 when event_bus_ack_tail_prob > 0."
+            )
+        if self.event_bus_ack_floor_ms <= 0:
+            raise ValueError("event_bus_ack_floor_ms must be > 0.")
         # Normalize casing via object.__setattr__ (frozen dataclass).
         object.__setattr__(self, "mode", self.mode.upper())
         object.__setattr__(self, "traffic_type", self.traffic_type.upper())
@@ -271,6 +334,66 @@ class BankingArchitecture:
             )
         )
 
+    # -- ACK latency model ------------------------------------------------------
+
+    def _sample_event_bus_ack_ms(self, *, queue_size: int) -> float:
+        """Sample a user-visible event-bus ACK latency (milliseconds).
+
+        Motivation
+        ----------
+        In the cell-based architecture, end-users observe an ingress ACK rather
+        than the full persistence path. In practice, this ACK is *not*
+        deterministic: it inherits variability from network jitter, broker
+        enqueueing, transient CPU contention, and occasional tail events (e.g.,
+        retries, GC pauses, bufferbloat).
+
+        This simulator represents ACK latency via a compact mixture model that
+        preserves reproducibility (seeded RNG) while producing distributions
+        suitable for manuscript-quality risk/variance analysis.
+
+        Parameters
+        ----------
+        queue_size : int
+            Snapshot of the target cell backlog (proxy for downstream pressure).
+
+        Returns
+        -------
+        float
+            Sampled ACK latency in milliseconds (strictly positive).
+        """
+        base = float(self.config.event_bus_ack_ms)
+
+        # Multiplicative jitter with mean 1.0 (μ=-½σ² yields E[LogNormal]=1).
+        sigma = float(self.config.event_bus_ack_jitter_lognorm_sigma)
+        if sigma > 0:
+            mu = -0.5 * sigma * sigma
+            mult = float(np.random.lognormal(mean=mu, sigma=sigma))
+        else:
+            mult = 1.0
+
+        # Additive micro-jitter.
+        add_std = float(self.config.event_bus_ack_additive_std_ms)
+        additive = float(np.random.normal(loc=0.0, scale=add_std)) if add_std > 0 else 0.0
+
+        # Backlog sensitivity (proxying broker/backpressure effects).
+        backlog = float(queue_size) * float(self.config.event_bus_ack_backlog_scale_ms)
+
+        ack_ms = base * mult + additive + backlog
+
+        # Rare tail events (heavy-tailed spikes).
+        p_tail = float(self.config.event_bus_ack_tail_prob)
+        if p_tail > 0 and float(np.random.random()) < p_tail:
+            ack_ms += float(
+                np.random.lognormal(
+                    mean=float(self.config.event_bus_ack_tail_lognorm_mu),
+                    sigma=float(self.config.event_bus_ack_tail_lognorm_sigma),
+                )
+            )
+
+        # Physical lower bound.
+        return max(float(self.config.event_bus_ack_floor_ms), ack_ms)
+
+
     # -- Transaction processing ------------------------------------------------
 
     def process_transaction(self, tx: Transaction) -> Generator:
@@ -334,7 +457,12 @@ class BankingArchitecture:
         target_cell: simpy.Resource = self.cells[cell_id]
 
         # User-visible path: event-bus acknowledgement.
-        yield self.env.timeout(self.config.event_bus_ack_ms)
+        # The backlog snapshot is taken *before* the ACK wait to avoid feedback
+        # from the ACK itself.
+        backlog_snapshot = len(target_cell.queue)
+        ack_ms = self._sample_event_bus_ack_ms(queue_size=backlog_snapshot)
+
+        yield self.env.timeout(ack_ms)
         wait_time: float = self.env.now - start_wait
 
         # Fork asynchronous backend work (fire-and-forget from user's perspective).
@@ -346,9 +474,9 @@ class BankingArchitecture:
                 "architecture": self.config.mode,
                 "arrival_time": float(tx.arrival_time),
                 "wait_time": float(wait_time),
-                "service_time": float(self.config.event_bus_ack_ms),
+                "service_time": float(ack_ms),
                 "total_time": float(self.env.now - tx.arrival_time),
-                "queue_size": len(target_cell.queue),
+                "queue_size": int(backlog_snapshot),
                 "cell_id": cell_id,
             }
         )
