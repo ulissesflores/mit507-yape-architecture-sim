@@ -1,7 +1,7 @@
 # 🏦 Yape Architecture Simulation: Monolith vs. Cell-Based
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18641336.svg)](https://doi.org/10.5281/zenodo.18641336)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18645894.svg)](https://doi.org/10.5281/zenodo.18645894)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://drive.google.com/file/d/1taz-NsFko0SNLgnSogwvqj3753Duckyi)
 
