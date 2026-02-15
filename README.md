@@ -3,100 +3,116 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18641336.svg)](https://doi.org/10.5281/zenodo.18641336)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ulissesflores/mit507-yape-architecture-sim/blob/main/notebooks/simulation_analysis.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://drive.google.com/file/d/1taz-NsFko0SNLgnSogwvqj3753Duckyi)
 
 > **Architectural validation for high-frequency FinTech systems.**
 
 ## 📋 Overview
 
-This repository contains the scientific artifacts supporting the case study **"Yape: From Monolith to Cell-Based Architecture"**. 
+This repository contains the scientific artifacts supporting the case study **"Yape: From Monolith to Cell-Based Architecture"**.
 
-Developed by **Carlos Ulisses Flores** for the MIT-507 (Digital Organization) course, this project uses Discrete Event Simulation (DES) to mathematically prove why legacy banking architectures fail under "Black Friday" loads and how **Cell-Based Architectures (Bulkheads)** provide infinite horizontal scalability.
+Developed by **Carlos Ulisses Flores** for the MIT-507 (Digital Organization) course, this project uses Discrete Event Simulation (DES) to mathematically prove why legacy banking architectures fail under "Black Friday" loads and how **Cell-Based Architectures (Bulkheads)** provide horizontal scalability with bounded user-visible latency.
 
 ## 🧪 The Experiment
 
-This repository simulates two architectural regimes under identical traffic:
-a single **monolith** with a shared connection pool, and a **cell-based**
-architecture in which shards are independently processed by per-cell workers.
+Two architectural regimes are simulated under identical stress traffic
+(2 000 transactions/second, seed = 42, 30-second horizon):
+
+1.  **AS-IS (Monolithic/Legacy):** A single shared `simpy.Resource`
+    (capacity = 50) models a centralized database connection pool.
+    Transactions block while waiting for a free slot, exposing end-users
+    to queueing delay that grows without bound when the traffic
+    intensity ρ = λ/μ > 1.
+
+2.  **TO-BE (Cell-Based/Event-Driven):** Transactions are routed to
+    10 independent cells (shards) and acknowledged via an asynchronous
+    event-bus handoff.  User-visible latency is dominated by the
+    ingress ACK (~2 ms baseline), while backend persistence completes
+    asynchronously by cell-local workers.
 
 ### ACK variability model (cell-based)
 
 In the cell-based regime, the client-observable latency is the **ingress ACK**
-(i.e., acknowledgement after asynchronous handoff). In production systems this ACK
-is rarely deterministic; it typically exhibits:
+(acknowledgement after asynchronous handoff).  In production systems this ACK
+is rarely deterministic; it exhibits micro-jitter, load-coupled drift, and
+rare tail spikes.  The simulator uses a compact mixture model:
 
-- **micro-jitter** (network jitter, enqueue/dequeue variability, short CPU contention),
-- **load-coupled drift** (backpressure as queues grow), and
-- **rare tail spikes** (transient retries, GC pauses, kernel scheduling anomalies).
-
-To capture these effects without overfitting, the simulator uses an explicit and
-reproducible mixture model:
-
-\[
-	ext{ack}_{ms} = b \cdot \mathrm{LogNormal}(\mu=-	frac{1}{2}\sigma^2,\ \sigma)
-+ \mathcal{N}(0,\ s)
+$$
+\text{ack}_{ms} = b \cdot \mathrm{LogNormal}\!\bigl(\mu\!=\!-\tfrac{1}{2}\sigma^2,\,\sigma\bigr)
++ \mathcal{N}(0,\,s)
 + q \cdot k
-+ \mathbb{I}_{tail}\cdot \mathrm{LogNormal}(\mu_t,\ \sigma_t)
-\]
++ \mathbb{I}_{tail}\cdot \mathrm{LogNormal}(\mu_t,\,\sigma_t)
+$$
 
-Where:
-- \(b\) is `event_bus_ack_ms` (baseline ACK),
-- \(\sigma\) is `event_bus_ack_jitter_lognorm_sigma` (multiplicative jitter),
-- \(s\) is `event_bus_ack_additive_std_ms` (additive jitter),
-- \(q\) is the target cell backlog snapshot, with slope \(k\) = `event_bus_ack_backlog_scale_ms`,
-- \(\mathbb{I}_{tail}\sim\mathrm{Bernoulli}(p)\) with \(p\) = `event_bus_ack_tail_prob`,
-  and the spike parameters \((\mu_t,\sigma_t)\) are
-  (`event_bus_ack_tail_lognorm_mu`, `event_bus_ack_tail_lognorm_sigma`).
+All parameters are recorded in `experiment_provenance.json` for full
+reproducibility.
 
-All parameters are recorded in `experiment_provenance.json` when running the notebook.
+### Key results
 
+| Metric | Monolith | Cell-based |
+|--------|----------|------------|
+| Transactions completed | 5 311 (8.9%) | 60 458 (100.8%) |
+| Median latency (p50) | 13 537 ms | 5.78 ms |
+| p99 latency | 26 788 ms | 10.25 ms |
+| SLA compliance (≤ 1 s) | 5.4% | 100.0% |
+| Traffic intensity (ρ) | 2.0 (unstable) | N/A (async) |
 
-We simulate two distinct architectural patterns under stress conditions (500 TPS):
-
-1.  **AS-IS (Monolithic/Legacy):** A system with a shared `PostgreSQL` resource. Validates the "Hollow Core" problem where database locks cause cascading latency.
-2.  **TO-BE (Cell-Based/Event-Driven):** A system sharded into 10 independent `Cells`, using `Kafka` for asynchronous ingestion. Validates **Little's Law** ($L = \lambda W$) applied to throughput.
+> **Note on transaction counts:** the monolith completes only 8.9% of the
+> ~60 000 generated transactions.  The remaining ~55 000 are trapped in the
+> unbounded queue when the simulation horizon expires.  This is a correct
+> consequence of ρ > 1 (unstable M/G/c queue); the reported metrics refer
+> exclusively to **completed** transactions.
 
 ## 📂 Repository Structure
+
 ```text
 mit507-yape-architecture-sim/
 ├── src/
-│   └── simulation.py       # Core SimPy logic (Discrete Event Simulation)
+│   ├── __init__.py
+│   └── simulation.py           # SimPy DES engine + ExperimentConfig dataclass
 ├── notebooks/
-│   └── analysis.ipynb      # Jupyter Notebook for results visualization
-├── data/
-│   └── logs/               # Synthetic logs generated by the simulation
-├── requirements.txt        # Project dependencies (Reproducibility)
-├── CITATION.cff            # Academic citation metadata
-└── LICENSE                 # Apache 2.0 License
+│   └── simulation_analysis.ipynb   # Analysis notebook (also on Colab)
+├── requirements.txt            # Pinned dependencies
+├── CITATION.cff                # Academic citation metadata
+└── LICENSE                     # Apache 2.0
 ```
 
 ## 🚀 Quick Start
 
-### Option A: Cloud (Google Colab)
-Click the **"Open in Colab"** badge above to run the simulation in your browser without installation.
+### Option A: Cloud (Google Colab) — recommended
 
-### Option B: Local Execution
+Click the **"Open in Colab"** badge above.  The notebook clones this
+repository, installs only `simpy` (the scientific stack ships with Colab),
+and runs both experiments end-to-end.
+
+### Option B: Local execution
+
 ```bash
-# 1. Clone
-git clone [https://github.com/ulissesflores/mit507-yape-architecture-sim.git](https://github.com/ulissesflores/mit507-yape-architecture-sim.git)
+git clone https://github.com/ulissesflores/mit507-yape-architecture-sim.git
 cd mit507-yape-architecture-sim
-
-# 2. Install
 pip install -r requirements.txt
-
-# 3. Run
-python src/simulation.py
+python src/simulation.py --mode MONOLITH --traffic-type STRESS -v
+python src/simulation.py --mode CELL_BASED --traffic-type STRESS -v
 ```
 
-### 📊 Results & Hypothesis
+## 📊 Figures
 
-The simulation demonstrates that under high load ($\lambda > \mu$):
+The notebook generates four publication-ready figures (300 dpi, pt-BR
+titles):
 
-* **Monolith:** Latency grows exponentially as queue size increases (blocking I/O).
-* **Cell-Based:** Latency remains constant for the user (async ACK), while backend throughput scales linearly with the number of cells.
+| Figure | Description |
+|--------|-------------|
+| **Fig 1** | Latência ao Longo do Tempo (Colapso Monolítico) — log-y scatter |
+| **Fig 2** | Distribuição Acumulada de Latência (ECDF) — log-x CDF |
+| **Fig 3** | Variância Operacional (Escala Logarítmica) — violin + box |
+| **Fig 4** | Vazão Efetiva (Transações Concluídas / Segundo) — zero-filled throughput |
 
 ## 📜 License
-This project is licensed under the Apache License 2.0 - see the LICENSE file for details.
+
+This project is licensed under the Apache License 2.0 — see the
+[LICENSE](LICENSE) file for details.
 
 ## ✍️ Citation
-If you use this software in your research, please cite it using the metadata in CITATION.cff.
+
+If you use this software in your research, please cite it using the
+metadata in [CITATION.cff](CITATION.cff) or the Zenodo DOI above.

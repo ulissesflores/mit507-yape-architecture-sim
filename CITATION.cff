@@ -6,8 +6,8 @@ authors:
     orcid: "https://orcid.org/0000-0002-6034-7765"
     website: "https://ulissesflores.com"
 title: "Yape Architecture Simulation: Monolith vs. Cell-Based Resilience"
-version: 1.0.0
-date-released: 2026-02-14
+version: 2.0.0
+date-released: 2026-02-15
 url: "https://github.com/ulissesflores/mit507-yape-architecture-sim"
 doi: 10.5281/zenodo.18641336
 license: Apache-2.0
@@ -15,6 +15,8 @@ keywords:
   - fintech
   - simulation
   - simpy
-  - architecture
-  - little-law
+  - discrete-event-simulation
   - cell-based-architecture
+  - queueing-theory
+  - little-law
+  - bulkhead-pattern
